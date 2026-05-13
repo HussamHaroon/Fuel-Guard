@@ -1,12 +1,21 @@
 import { useState } from 'react';
 import { useFuelData } from '../hooks/useFuelData';
-import { Trash2, AlertTriangle, Filter } from 'lucide-react';
+import { Trash2, AlertTriangle, Filter, Download, Search, FileText, FileSpreadsheet, Calendar } from 'lucide-react';
 import Skeleton from '../components/ui/Skeleton';
+import { formatCostPerUnit, getCurrencySymbol } from '../utils/units';
+import { exportToPDF, exportToExcel } from '../utils/export';
+import Badge, { PillBadge } from '../components/ui/Badge';
 
 const History = () => {
   const { data, loading, deleteLog } = useFuelData();
   const [filter, setFilter] = useState('all'); // 'all' | 'flagged'
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [exporting, setExporting] = useState(null); // 'pdf' | 'excel' | null
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const currencySymbol = getCurrencySymbol(data.vehicleProfile?.currency || 'USD');
+  const fuelUnit = data.vehicleProfile?.fuelVolumeUnit || 'L';
+  const distanceUnit = data.vehicleProfile?.distanceUnit || 'km';
 
   if (loading) {
     return (
@@ -14,16 +23,37 @@ const History = () => {
         <Skeleton className="h-8 w-32" />
         <Skeleton className="h-12 w-full" />
         {[1, 2, 3, 4, 5].map((i) => (
-          <Skeleton key={i} className="h-20 w-full" />
+          <Skeleton key={i} variant="card" />
         ))}
       </div>
     );
   }
 
   const { logs } = data;
-  const filteredLogs = filter === 'flagged' 
-    ? logs.filter((log) => log.isFlagged) 
+
+  // Apply both filter (all/flagged) and search query
+  let filteredLogs = filter === 'flagged'
+    ? logs.filter((log) => log.isFlagged)
     : logs;
+
+  // Apply search filter
+  if (searchQuery.trim() !== '') {
+    const query = searchQuery.toLowerCase();
+    filteredLogs = filteredLogs.filter((log) => {
+      const dateStr = new Date(log.date).toLocaleDateString().toLowerCase();
+      const odometerStr = log.odometer.toString();
+      const litersStr = log.liters.toString();
+      const priceStr = log.price ? log.price.toString() : '';
+
+      return (
+        dateStr.includes(query) ||
+        odometerStr.includes(query) ||
+        litersStr.includes(query) ||
+        priceStr.includes(query)
+      );
+    });
+  }
+
 
   const handleDelete = (logId) => {
     deleteLog(logId);
@@ -33,15 +63,25 @@ const History = () => {
   // Empty state
   if (logs.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] p-6 text-center">
-        <div className="w-20 h-20 bg-gray-800 rounded-full flex items-center justify-center mb-4">
-          <Filter className="w-10 h-10 text-[#9CA3AF]" />
+      <div className="flex flex-col items-center justify-center min-h-[60vh] p-6 text-center animate-fade-in">
+        <div
+          className="w-24 h-24 rounded-2xl flex items-center justify-center mb-6 animate-bounce"
+          style={{ 
+            background: 'var(--gradient-primary)',
+            boxShadow: 'var(--shadow-glow-blue)'
+          }}
+        >
+          <Filter className="w-12 h-12 text-white" />
         </div>
-        <h1 className="text-xl font-bold text-[#F3F4F6] mb-2">No Entries Yet</h1>
-        <p className="text-[#D1D5DB] mb-6">Start tracking your fuel consumption.</p>
+        <h1 className="text-2xl font-bold mb-2" style={{ color: 'var(--text-primary)' }}>No Entries Yet</h1>
+        <p className="mb-8" style={{ color: 'var(--text-secondary)' }}>Start tracking your fuel consumption.</p>
         <a
           href="/add"
-          className="inline-flex items-center justify-center px-6 py-3 bg-primary-600 text-white font-semibold rounded-xl hover:bg-primary-700 active:bg-primary-800 transition-colors min-h-[48px]"
+          className="inline-flex items-center justify-center px-8 py-4 text-white font-semibold rounded-xl min-h-[56px] transition-all duration-300 hover-lift active-scale"
+          style={{ 
+            background: 'var(--gradient-primary)',
+            boxShadow: 'var(--shadow-glow-blue)'
+          }}
         >
           Add Entry
         </a>
@@ -50,123 +90,320 @@ const History = () => {
   }
 
   return (
-    <div className="p-4 lg:p-8 space-y-4 max-w-4xl mx-auto">
+    <div className="p-4 lg:p-8 space-y-6 max-w-5xl mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl lg:text-3xl font-bold text-[#F3F4F6]">History</h1>
-        <span className="text-sm text-[#9CA3AF]">{logs.length} entries</span>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 animate-fade-in">
+        <div>
+          <h1 className="text-2xl lg:text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>
+            History
+          </h1>
+          <span className="text-sm" style={{ color: 'var(--text-muted)' }}>
+            {logs.length} {logs.length === 1 ? 'entry' : 'entries'}
+          </span>
+        </div>
+        <PillBadge variant={filter === 'flagged' ? 'danger' : 'info'}>
+          {filter === 'all' ? 'All Entries' : 'Flagged Only'}
+        </PillBadge>
       </div>
 
-      {/* Filter */}
-      <div className="flex gap-2">
-        <button
-          onClick={() => setFilter('all')}
-          className={`px-4 py-2 rounded-lg font-medium text-sm transition-colors min-h-[44px] ${
-            filter === 'all'
-              ? 'bg-primary-600 text-white'
-              : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-          }`}
-        >
-          All ({logs.length})
-        </button>
-        <button
-          onClick={() => setFilter('flagged')}
-          className={`px-4 py-2 rounded-lg font-medium text-sm transition-colors min-h-[44px] flex items-center gap-2 ${
-            filter === 'flagged'
-              ? 'bg-danger-600 text-white'
-              : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-          }`}
-        >
-          <AlertTriangle className="w-4 h-4" />
-          Flagged ({logs.filter((l) => l.isFlagged).length})
-        </button>
-      </div>
+       {/* Search Bar */}
+       <div className="relative animate-fade-in-up delay-100">
+         <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 transition-colors" style={{ color: 'var(--text-muted)' }} />
+         <input
+           type="text"
+           placeholder="Search by date, odometer, or amount..."
+           value={searchQuery}
+           onChange={(e) => setSearchQuery(e.target.value)}
+           className="w-full pl-12 pr-4 py-3 rounded-xl min-h-[52px] focus:outline-none transition-all duration-200"
+           style={{
+             backgroundColor: 'var(--bg-input)',
+             color: 'var(--text-primary)',
+             border: '2px solid var(--border-color)',
+           }}
+         />
+       </div>
+
+       {/* Filter and Export */}
+       <div className="flex flex-wrap gap-3 justify-between animate-fade-in-up delay-200">
+         {/* Filter Buttons */}
+         <div className="flex gap-2">
+           <button
+             onClick={() => setFilter('all')}
+             className={`px-5 py-2.5 rounded-xl font-medium text-sm transition-all duration-200 min-h-[44px] flex items-center gap-2 ${filter === 'all'
+                 ? 'shadow-glow-blue'
+                 : ''
+               }`}
+             style={{
+               background: filter === 'all' 
+                 ? 'var(--gradient-primary)' 
+                 : 'var(--bg-secondary)',
+               color: filter === 'all' 
+                 ? 'white' 
+                 : 'var(--text-secondary)',
+               border: filter === 'all' 
+                 ? 'none' 
+                 : '1px solid var(--border-color)',
+             }}
+           >
+             <Calendar className="w-4 h-4" />
+             All ({logs.length})
+           </button>
+           <button
+             onClick={() => setFilter('flagged')}
+             className={`px-5 py-2.5 rounded-xl font-medium text-sm transition-all duration-200 min-h-[44px] flex items-center gap-2 ${filter === 'flagged'
+                 ? 'shadow-glow-danger'
+                 : ''
+               }`}
+             style={{
+               background: filter === 'flagged' 
+                 ? 'var(--gradient-danger)' 
+                 : 'var(--bg-secondary)',
+               color: filter === 'flagged' 
+                 ? 'white' 
+                 : 'var(--text-secondary)',
+               border: filter === 'flagged' 
+                 ? 'none' 
+                 : '1px solid var(--border-color)',
+             }}
+           >
+             <AlertTriangle className="w-4 h-4" />
+             Flagged ({logs.filter((l) => l.isFlagged).length})
+           </button>
+         </div>
+
+         {/* Export Menu */}
+         <div className="relative">
+           <button
+             onClick={() => setShowExportMenu(!showExportMenu)}
+             disabled={exporting}
+             className="flex items-center gap-2 px-5 py-2.5 rounded-xl font-medium text-sm transition-all duration-200 min-h-[44px]"
+             style={{
+               background: showExportMenu 
+                 ? 'var(--gradient-primary)' 
+                 : 'var(--bg-secondary)',
+               color: showExportMenu 
+                 ? 'white' 
+                 : 'var(--text-primary)',
+               border: showExportMenu 
+                 ? 'none' 
+                 : '1px solid var(--border-color)',
+             }}
+           >
+             {exporting ? (
+               <Download className="w-5 h-5 animate-spin" />
+             ) : (
+               <>
+                 <Download className="w-5 h-5" />
+                 Export
+               </>
+             )}
+           </button>
+            
+           {/* Export Dropdown */}
+           {showExportMenu && (
+             <div className="absolute right-0 top-14 z-50 w-52 rounded-xl shadow-xl overflow-hidden animate-fade-in-up" 
+               style={{ 
+                 backgroundColor: 'var(--bg-secondary)', 
+                 border: '1px solid var(--border-color)' 
+               }}
+             >
+                <button
+                  onClick={() => {
+                    setExporting('pdf');
+                    const success = exportToPDF(filteredLogs, data.vehicleProfile, currencySymbol);
+                    if (!success) {
+                      setExporting(null);
+                      return;
+                    }
+                    setTimeout(() => {
+                      setExporting(null);
+                      setShowExportMenu(false);
+                    }, 2000);
+                  }}
+                  disabled={exporting === 'pdf'}
+                  className="w-full px-4 py-3 text-left flex items-center gap-3 hover:bg-[var(--bg-primary)] transition-colors active-scale"
+                  style={{ color: 'var(--text-primary)' }}
+                >
+                  <FileText className="w-4 h-4" />
+                  <span className="font-medium">Export as PDF</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setExporting('excel');
+                    const success = exportToExcel(filteredLogs, data.vehicleProfile, currencySymbol);
+                    if (!success) {
+                      setExporting(null);
+                      return;
+                    }
+                    setTimeout(() => {
+                      setExporting(null);
+                      setShowExportMenu(false);
+                    }, 2000);
+                  }}
+                  disabled={exporting === 'excel'}
+                  className="w-full px-4 py-3 text-left flex items-center gap-3 hover:bg-[var(--bg-primary)] transition-colors border-t active-scale"
+                  style={{ color: 'var(--text-primary)', borderColor: 'var(--border-color)' }}
+                >
+                  <FileSpreadsheet className="w-4 h-4" />
+                  <span className="font-medium">Export as Excel</span>
+                </button>
+             </div>
+           )}
+         </div>
+       </div>
 
       {/* Entries List - Grid on desktop */}
-      <div className="space-y-3 lg:grid lg:grid-cols-2 lg:gap-4 lg:space-y-0">
+      <div className="space-y-3 lg:grid lg:grid-cols-2 lg:gap-4 lg:space-y-0 animate-fade-in-up delay-300">
         {filteredLogs.length === 0 ? (
-          <div className="text-center py-8 text-[#9CA3AF]">
-            No flagged entries found.
+          <div className="col-span-2 text-center py-12 glass rounded-xl">
+            <Filter className="w-12 h-12 mx-auto mb-4 opacity-30" style={{ color: 'var(--text-muted)' }} />
+            <p className="text-lg font-medium" style={{ color: 'var(--text-muted)' }}>
+              No entries found
+            </p>
           </div>
         ) : (
-          filteredLogs.map((log) => (
+          filteredLogs.map((log, index) => (
             <div
               key={log.id}
-              className={`bg-[#1E293B] rounded-xl shadow-sm border overflow-hidden ${
-                log.isFlagged ? 'border-danger-500/50 border-l-4 border-l-danger-500' : 'border-gray-700'
-              }`}
+              className={`rounded-xl shadow-md overflow-hidden transition-all duration-300 hover-lift animate-fade-in-up ${log.isFlagged ? 'shadow-glow-danger' : ''
+                }`}
+              style={{
+                backgroundColor: 'var(--bg-secondary)',
+                border: `1px solid ${log.isFlagged ? 'var(--accent-alert)' : 'var(--border-color)'}`,
+                borderLeftWidth: log.isFlagged ? '4px' : '1px',
+                borderLeftColor: log.isFlagged ? 'var(--accent-alert)' : undefined,
+                animationDelay: `${index * 50}ms`
+              }}
             >
-              <div className="p-4">
-                <div className="flex justify-between items-start">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="font-semibold text-[#F3F4F6]">
-                        {log.liters}L
-                      </span>
-                      {log.isFlagged && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-danger-600/20 text-danger-400 text-xs font-semibold rounded-full">
-                          <AlertTriangle className="w-3 h-3" />
-                          Theft Alert
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-sm text-[#D1D5DB]">
-                      Odometer: {log.odometer.toLocaleString()} km
-                    </p>
-                    <p className="text-sm text-[#9CA3AF]">
-                      {new Date(log.date).toLocaleDateString('en-US', {
-                        weekday: 'short',
-                        year: 'numeric',
-                        month: 'short',
-                        day: 'numeric',
-                      })}
-                    </p>
-                    {log.price && (
-                      <p className="text-sm text-[#9CA3AF]">
-                        Cost: ₹{log.price.toLocaleString()}
-                      </p>
+              <div className="p-5">
+                <div className="flex justify-between items-start mb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-lg" style={{ color: 'var(--text-primary)' }}>
+                      {log.liters}{fuelUnit}
+                    </span>
+                    {log.isFlagged && (
+                      <Badge variant="danger" icon={AlertTriangle} size="sm">
+                        Theft Alert
+                      </Badge>
                     )}
                   </div>
                   <div className="text-right">
                     <p
-                      className={`text-xl font-bold ${
-                        log.isFlagged ? 'text-danger-500' : 'text-[#60A5FA]'
-                      }`}
+                      className="text-2xl font-bold"
+                      style={{ 
+                        color: log.isFlagged 
+                          ? 'var(--accent-alert)' 
+                          : 'var(--accent-blue)' 
+                      }}
                     >
                       {log.mileage.toFixed(1)}
+                     </p>
+                    <p className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>
+                      {distanceUnit}/{fuelUnit}
                     </p>
-                    <p className="text-xs text-[#9CA3AF]">km/L</p>
-                  </div>
+                   </div>
                 </div>
 
-                {/* Delete Confirmation */}
-                {confirmDelete === log.id ? (
-                  <div className="mt-3 pt-3 border-t border-gray-700 flex items-center justify-between">
-                    <span className="text-sm text-[#D1D5DB]">Delete this entry?</span>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => setConfirmDelete(null)}
-                        className="px-3 py-1.5 text-sm text-[#9CA3AF] hover:text-[#F3F4F6] min-h-[36px]"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={() => handleDelete(log.id)}
-                        className="px-3 py-1.5 bg-danger-600 text-white text-sm rounded-lg hover:bg-danger-700 min-h-[36px]"
-                      >
-                        Delete
-                      </button>
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                 <div className="flex flex-col gap-1 mb-3">
+                   <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+                     {new Date(log.date).toLocaleDateString('en-US', {
+                       month: 'short',
+                       day: 'numeric',
+                       year: 'numeric',
+                     })}
+                   </p>
+                   <div className="flex flex-col gap-1">
+                      <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+                        {log.odometer.toLocaleString()} {distanceUnit}
+                      </p>
+                     {log.pumpName && (
+                       <p className="text-sm flex items-center gap-1" style={{ color: 'var(--text-muted)' }}>
+                         <Droplet className="w-3 h-3" />
+                         {log.pumpName}
+                       </p>
+                     )}
+                   </div>
+                 </div>
+                </div>
+
+                {log.costPerKm && (
+                  <div className="p-3 rounded-lg mb-3" style={{ backgroundColor: 'var(--bg-primary)' }}>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                          Cost per {distanceUnit}
+                        </p>
+                        <p className="text-lg font-bold" style={{ color: 'var(--accent-blue)' }}>
+                          {currencySymbol}{log.costPerKm.toFixed(3)}
+                        </p>
+                      </div>
+                      {log.costPerMile && (
+                        <div className="text-right">
+                          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                            ≈ {currencySymbol}{log.costPerMile.toFixed(3)}/mi
+                          </p>
+                        </div>
+                      )}
                     </div>
                   </div>
-                ) : (
-                  <button
-                    onClick={() => setConfirmDelete(log.id)}
-                    className="mt-3 pt-3 border-t border-gray-700 w-full flex items-center justify-center gap-2 text-[#9CA3AF] hover:text-danger-500 transition-colors min-h-[44px]"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                    <span className="text-sm">Delete</span>
-                  </button>
                 )}
+
+                 {/* Delete Button */}
+                 {confirmDelete === log.id ? (
+                   <div
+                     className="flex gap-2 mt-2"
+                   >
+                     <button
+                       onClick={() => setConfirmDelete(null)}
+                       className="flex-1 px-4 py-2 text-sm font-medium rounded-lg transition-colors active-scale"
+                       style={{ 
+                         backgroundColor: 'var(--bg-input)',
+                         color: 'var(--text-secondary)' 
+                       }}
+                     >
+                       Cancel
+                     </button>
+                     <button
+                       onClick={() => handleDelete(log.id)}
+                       className="flex-1 px-4 py-2 text-sm font-semibold rounded-lg transition-colors active-scale text-white"
+                       style={{ 
+                         background: 'var(--gradient-danger)',
+                         boxShadow: 'var(--shadow-glow-danger)' 
+                       }}
+                     >
+                       Delete
+                     </button>
+                   </div>
+                 ) : (
+                   <div className="space-y-2">
+                     {/* Additional Info */}
+                     {(log.note || log.pumpName) && (
+                       <div className="pt-2 border-t" style={{ borderColor: 'var(--border-color)' }}>
+                         {log.note && (
+                           <div className="flex items-start gap-2 p-2 rounded-lg" style={{ backgroundColor: 'var(--bg-primary)' }}>
+                             <FileText className="w-4 h-4 mt-0.5 flex-shrink-0" style={{ color: 'var(--text-muted)' }} />
+                             <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                               {log.note}
+                             </p>
+                           </div>
+                         )}
+                       </div>
+                     )}
+                     <button
+                       onClick={() => setConfirmDelete(log.id)}
+                       className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm transition-all duration-200 active-scale"
+                       style={{
+                         backgroundColor: 'var(--bg-input)',
+                         color: 'var(--text-muted)',
+                         border: '1px solid var(--border-color)',
+                       }}
+                     >
+                       <Trash2 className="w-4 h-4" />
+                       <span>Delete Entry</span>
+                     </button>
+                   </div>
+                 )}
               </div>
             </div>
           ))
@@ -177,4 +414,3 @@ const History = () => {
 };
 
 export default History;
-
