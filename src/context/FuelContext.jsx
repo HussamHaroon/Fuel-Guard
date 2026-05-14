@@ -1,23 +1,69 @@
 import React, { createContext, useState, useEffect, useCallback } from 'react';
 import { storage } from '../utils/storage';
+import {
+  calculateTotalCO2,
+  calculateCO2PerKm,
+  calculateMonthlyCO2,
+  calculateYearlyCO2,
+} from '../utils/carbonCalculations';
+import {
+  calculateTotalExpenditure,
+  calculateCostPerKm,
+  checkBudgetAlert,
+} from '../utils/calculations';
+import { convertCurrencySync } from '../utils/currency';
 
 export const FuelContext = createContext();
 
 const STORAGE_KEY = 'fuelGuardDB';
 
-// Default state shape
 const defaultState = {
   logs: [],
+  drivers: [],
+  vehicles: [],
+  currentVehicleId: null,
   vehicleProfile: {
     name: '',
     expectedMileage: 15,
     tankCapacity: 50,
+    country: 'US',
+    currency: 'USD',
+    distanceUnit: 'km',
+    fuelVolumeUnit: 'L',
+    efficiencyUnit: 'km/L',
+    vehicleId: null,
+    year: null,
+    make: null,
+    model: null,
+    variant: null,
+    epaCity: null,
+    epaHighway: null,
+    epaCombined: null,
+    fuelType: null,
+    assignedDriverId: null,
+    theftThreshold: 0.75,
+    geofences: [],
+    emergencyContact: {
+      name: '',
+      phone: '',
+      relationship: '',
+    },
   },
   stats: {
     avgMileage: 15,
     totalFuel: 0,
     totalDistance: 0,
+    totalCO2: 0,
+    co2PerKm: 0,
+    monthlyCO2: [],
+    yearlyCO2: [],
+    totalExpenditure: 0,
+    costPerKm: 0,
+    averagePricePerUnit: 0,
   },
+  monthlyBudget: 200,
+  budgetAlert: null,
+  lastLocation: null,
 };
 
 export const FuelProvider = ({ children }) => {
@@ -26,7 +72,6 @@ export const FuelProvider = ({ children }) => {
   const [storageType, setStorageType] = useState('loading');
   const [skipPersist, setSkipPersist] = useState(false);
 
-  // Load from storage on mount
   useEffect(() => {
     const loadData = async () => {
       try {
@@ -44,44 +89,73 @@ export const FuelProvider = ({ children }) => {
     loadData();
   }, []);
 
-  // Save to storage on data change (skip initial load and when clearing)
   useEffect(() => {
     if (!loading && !skipPersist) {
       storage.set(STORAGE_KEY, data);
     }
-    // Reset skipPersist after the effect runs
     if (skipPersist) {
       setSkipPersist(false);
     }
   }, [data, loading, skipPersist]);
 
-  // Calculate stats when logs change
-  const calculateStats = useCallback((logs) => {
-    if (logs.length === 0) {
-      return { avgMileage: 15, totalFuel: 0, totalDistance: 0 };
+  const calculateStats = useCallback((logs, vehicleId = null) => {
+    const filteredLogs = vehicleId && data.vehicles && data.vehicles.length > 1
+      ? logs.filter(log => log.vehicleId === vehicleId || (!log.vehicleId && vehicleId === data.currentVehicleId))
+      : logs;
+
+    if (filteredLogs.length === 0) {
+      return {
+        avgMileage: 15,
+        totalFuel: 0,
+        totalDistance: 0,
+        totalCO2: 0,
+        co2PerKm: 0,
+        monthlyCO2: [],
+        yearlyCO2: [],
+      };
     }
 
-    const totalFuel = logs.reduce((sum, log) => sum + (log.liters || 0), 0);
-    const validMileages = logs.filter((log) => log.mileage > 0);
+    const totalFuel = filteredLogs.reduce((sum, log) => sum + (log.liters || 0), 0);
+    const validMileages = filteredLogs.filter((log) => log.mileage > 0);
     const avgMileage =
       validMileages.length > 0
         ? validMileages.reduce((sum, log) => sum + log.mileage, 0) / validMileages.length
         : 15;
 
-    // Calculate total distance from first to last odometer reading
-    const sortedLogs = [...logs].sort((a, b) => new Date(a.date) - new Date(b.date));
+    const sortedLogs = [...filteredLogs].sort((a, b) => new Date(a.date) - new Date(b.date));
     const totalDistance =
       sortedLogs.length > 1
         ? sortedLogs[sortedLogs.length - 1].odometer - sortedLogs[0].odometer
         : 0;
 
-    return { avgMileage, totalFuel, totalDistance };
-  }, []);
+    const fuelType = data.vehicleProfile?.fuelType || 'gasoline';
+    const totalCO2 = calculateTotalCO2(filteredLogs, fuelType);
+    const co2PerKm = calculateCO2PerKm(totalCO2, totalDistance);
+    const monthlyCO2 = calculateMonthlyCO2(filteredLogs, fuelType);
+    const yearlyCO2 = calculateYearlyCO2(filteredLogs, fuelType);
 
-  // Add a new log entry
+    const totalExpenditure = filteredLogs.reduce((sum, log) => sum + (log.price || 0), 0);
+    const costPerKm = totalDistance > 0 ? totalExpenditure / totalDistance : 0;
+    const averagePricePerUnit = totalFuel > 0 ? totalExpenditure / totalFuel : 0;
+
+    const budgetAlert = checkBudgetAlert(totalExpenditure, data.monthlyBudget || 200);
+
+    return {
+      avgMileage,
+      totalFuel,
+      totalDistance,
+      totalCO2,
+      co2PerKm,
+      monthlyCO2,
+      yearlyCO2,
+      totalExpenditure,
+      costPerKm,
+      averagePricePerUnit,
+    };
+  }, [data.vehicleProfile?.fuelType, data.monthlyBudget, data.currentVehicleId, data.vehicles?.length]);
+
   const addLog = useCallback((newLog) => {
     setData((prev) => {
-      // Sort logs by date descending to get the most recent
       const sortedLogs = [...prev.logs].sort(
         (a, b) => new Date(b.date) - new Date(a.date)
       );
@@ -94,11 +168,16 @@ export const FuelProvider = ({ children }) => {
 
       if (lastLog && newLog.liters > 0) {
         const distance = newLog.odometer - lastLog.odometer;
-        mileage = distance / newLog.liters;
 
-        // Theft detection: Flag if efficiency is 25% below average
-        if (mileage < prev.stats.avgMileage * 0.75 && mileage > 0) {
-          isFlagged = true;
+        if (distance > 1) {
+          mileage = distance / newLog.liters;
+
+          const theftThreshold = prev.vehicleProfile.theftThreshold ?? 0.75;
+          if (mileage < prev.stats.avgMileage * theftThreshold && mileage > 0) {
+            isFlagged = true;
+          }
+        } else {
+          mileage = 0;
         }
       }
 
@@ -107,6 +186,10 @@ export const FuelProvider = ({ children }) => {
         mileage: Math.round(mileage * 100) / 100,
         isFlagged,
         id: Date.now().toString(),
+        fuelType: newLog.fuelType || prev.vehicleProfile.fuelType || 'gasoline',
+        currency: prev.vehicleProfile.currency || 'USD',
+        originalCurrency: prev.vehicleProfile.currency || 'USD',
+        originalPrice: newLog.price,
       };
 
       const updatedLogs = [logEntry, ...prev.logs];
@@ -116,7 +199,6 @@ export const FuelProvider = ({ children }) => {
     });
   }, [calculateStats]);
 
-  // Delete a log entry
   const deleteLog = useCallback((logId) => {
     setData((prev) => {
       const updatedLogs = prev.logs.filter((log) => log.id !== logId);
@@ -125,7 +207,6 @@ export const FuelProvider = ({ children }) => {
     });
   }, [calculateStats]);
 
-  // Update vehicle profile
   const updateVehicleProfile = useCallback((profile) => {
     setData((prev) => ({
       ...prev,
@@ -133,163 +214,360 @@ export const FuelProvider = ({ children }) => {
     }));
   }, []);
 
-  // Inject demo data for demonstration
+  const updateVehicleProfileWithCurrencyConversion = useCallback(async (profile) => {
+    const currentData = { ...data };
+    const oldCurrency = currentData.vehicleProfile?.currency || 'USD';
+    const newCurrency = profile.currency || oldCurrency;
+
+    if (oldCurrency !== newCurrency && currentData.logs.length > 0) {
+      try {
+        const { fetchExchangeRates, convertCurrencySync } = await import('../utils/currency');
+        const rates = await fetchExchangeRates(oldCurrency);
+
+        const convertWithRates = (amount, from, to) => {
+          if (!amount || from === to) return amount;
+          const rate = rates?.rates?.[to];
+          if (!rate) {
+            console.warn(`No exchange rate for ${to}, using fallback`);
+            return amount;
+          }
+          return amount / rate;
+        };
+
+        const convertedLogs = currentData.logs.map((log) => {
+          const convertedPrice = convertWithRates(log.originalPrice || log.price, oldCurrency, newCurrency);
+          return {
+            ...log,
+            price: convertedPrice,
+            currency: newCurrency,
+            originalCurrency: oldCurrency,
+          };
+        });
+
+        setData((prev) => ({
+          ...prev,
+          logs: convertedLogs,
+          vehicleProfile: { ...prev.vehicleProfile, ...profile },
+          stats: calculateStats(convertedLogs),
+        }));
+
+        console.log('Currency conversion successful, updating state');
+      } catch (error) {
+        console.error('Currency conversion failed:', error);
+        setData((prev) => ({
+          ...prev,
+          vehicleProfile: { ...prev.vehicleProfile, currency: oldCurrency },
+        }));
+      }
+    } else {
+      setData((prev) => ({
+        ...prev,
+        vehicleProfile: { ...prev.vehicleProfile, ...profile },
+      }));
+    }
+  }, [data, calculateStats]);
+
+  // Add a new driver
+  const addDriver = useCallback((driver) => {
+    setData((prev) => ({
+      ...prev,
+      drivers: [
+        ...prev.drivers,
+        {
+          ...driver,
+          id: Date.now().toString(),
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    }));
+  }, []);
+
+  // Update a driver
+  const updateDriver = useCallback((driverId, updates) => {
+    setData((prev) => ({
+      ...prev,
+      drivers: prev.drivers.map((driver) =>
+        driver.id === driverId ? { ...driver, ...updates } : driver
+      ),
+    }));
+  }, []);
+
+  // Delete a driver
+  const deleteDriver = useCallback((driverId) => {
+    setData((prev) => {
+      const updatedDrivers = prev.drivers.filter((driver) => driver.id !== driverId);
+      return { ...prev, drivers: updatedDrivers };
+    });
+  }, []);
+
+  // Add a new vehicle
+  const addVehicle = useCallback((vehicle) => {
+    setData((prev) => {
+      const newVehicle = {
+        ...vehicle,
+        id: vehicle.id || Date.now().toString(),
+        createdAt: new Date().toISOString(),
+      };
+      const updatedVehicles = [...prev.vehicles, newVehicle];
+      const newCurrentVehicleId = prev.currentVehicleId || newVehicle.id;
+      const updatedProfile = { ...newVehicle, id: undefined, createdAt: undefined };
+      return {
+        ...prev,
+        vehicles: updatedVehicles,
+        currentVehicleId: newCurrentVehicleId,
+        vehicleProfile: updatedProfile,
+      };
+    });
+  }, []);
+
+  const updateVehicle = useCallback((vehicleId, updates) => {
+    setData((prev) => {
+      const updatedVehicles = prev.vehicles.map((vehicle) =>
+        vehicle.id === vehicleId ? { ...vehicle, ...updates } : vehicle
+      );
+      const updatedProfile = prev.currentVehicleId === vehicleId
+        ? { ...prev.vehicleProfile, ...updates, id: undefined, createdAt: undefined }
+        : prev.vehicleProfile;
+      return {
+        ...prev,
+        vehicles: updatedVehicles,
+        vehicleProfile: updatedProfile,
+      };
+    });
+  }, []);
+
+  const deleteVehicle = useCallback((vehicleId) => {
+    setData((prev) => {
+      const updatedVehicles = prev.vehicles.filter((vehicle) => vehicle.id !== vehicleId);
+      const newCurrentVehicleId = prev.currentVehicleId === vehicleId
+        ? (updatedVehicles.length > 0 ? updatedVehicles[0].id : null)
+        : prev.currentVehicleId;
+      const updatedProfile = newCurrentVehicleId
+        ? { ...updatedVehicles.find(v => v.id === newCurrentVehicleId), id: undefined, createdAt: undefined }
+        : prev.vehicleProfile;
+      return {
+        ...prev,
+        vehicles: updatedVehicles,
+        currentVehicleId: newCurrentVehicleId,
+        vehicleProfile: updatedProfile,
+      };
+    });
+  }, []);
+
+  const selectVehicle = useCallback((vehicleId) => {
+    setData((prev) => {
+      const selectedVehicle = prev.vehicles.find(v => v.id === vehicleId);
+      if (!selectedVehicle) return prev;
+      return {
+        ...prev,
+        currentVehicleId: vehicleId,
+        vehicleProfile: { ...selectedVehicle, id: undefined, createdAt: undefined },
+      };
+    });
+  }, []);
+
   const injectDemoData = useCallback(() => {
     const now = new Date();
-    const demoLogs = [
-      // Most recent - THEFT scenario (dramatic mileage drop)
-      {
-        id: '1',
-        date: new Date(now - 1 * 24 * 60 * 60 * 1000).toISOString(),
-        odometer: 15250,
-        liters: 45,
-        price: 4500,
-        mileage: 5.5, // Very low - THEFT
-        isFlagged: true,
-      },
-      // Normal entry
-      {
-        id: '2',
-        date: new Date(now - 4 * 24 * 60 * 60 * 1000).toISOString(),
-        odometer: 15000,
-        liters: 35,
-        price: 3500,
-        mileage: 14.3,
-        isFlagged: false,
-      },
-      // Normal entry
-      {
-        id: '3',
-        date: new Date(now - 8 * 24 * 60 * 60 * 1000).toISOString(),
-        odometer: 14500,
-        liters: 32,
-        price: 3200,
-        mileage: 15.6,
-        isFlagged: false,
-      },
-      // Another THEFT scenario
-      {
-        id: '4',
-        date: new Date(now - 12 * 24 * 60 * 60 * 1000).toISOString(),
-        odometer: 14000,
-        liters: 50,
-        price: 5000,
-        mileage: 6.0, // Very low - THEFT
-        isFlagged: true,
-      },
-      // Normal entries
-      {
-        id: '5',
-        date: new Date(now - 16 * 24 * 60 * 60 * 1000).toISOString(),
-        odometer: 13700,
-        liters: 30,
-        price: 3000,
-        mileage: 13.3,
-        isFlagged: false,
-      },
-      {
-        id: '6',
-        date: new Date(now - 20 * 24 * 60 * 60 * 1000).toISOString(),
-        odometer: 13300,
-        liters: 28,
-        price: 2800,
-        mileage: 14.3,
-        isFlagged: false,
-      },
-      {
-        id: '7',
-        date: new Date(now - 24 * 24 * 60 * 60 * 1000).toISOString(),
-        odometer: 12900,
-        liters: 30,
-        price: 3000,
-        mileage: 15.0,
-        isFlagged: false,
-      },
-      {
-        id: '8',
-        date: new Date(now - 28 * 24 * 60 * 60 * 1000).toISOString(),
-        odometer: 12450,
-        liters: 35,
-        price: 3500,
-        mileage: 14.0,
-        isFlagged: false,
-      },
-      // Another THEFT
-      {
-        id: '9',
-        date: new Date(now - 32 * 24 * 60 * 60 * 1000).toISOString(),
-        odometer: 11960,
-        liters: 55,
-        price: 5500,
-        mileage: 4.5, // Very low - THEFT
-        isFlagged: true,
-      },
-      {
-        id: '10',
-        date: new Date(now - 36 * 24 * 60 * 60 * 1000).toISOString(),
-        odometer: 11710,
-        liters: 32,
-        price: 3200,
-        mileage: 15.6,
-        isFlagged: false,
-      },
-      {
-        id: '11',
-        date: new Date(now - 40 * 24 * 60 * 60 * 1000).toISOString(),
-        odometer: 11210,
-        liters: 33,
-        price: 3300,
-        mileage: 14.2,
-        isFlagged: false,
-      },
-      {
-        id: '12',
-        date: new Date(now - 44 * 24 * 60 * 60 * 1000).toISOString(),
-        odometer: 10740,
-        liters: 30,
-        price: 3000,
-        mileage: 15.3,
-        isFlagged: false,
-      },
-      {
-        id: '13',
-        date: new Date(now - 48 * 24 * 60 * 60 * 1000).toISOString(),
-        odometer: 10280,
-        liters: 31,
-        price: 3100,
-        mileage: 14.8,
-        isFlagged: false,
-      },
-      {
-        id: '14',
-        date: new Date(now - 52 * 24 * 60 * 60 * 1000).toISOString(),
-        odometer: 9820,
-        liters: 29,
-        price: 2900,
-        mileage: 14.5,
-        isFlagged: false,
-      },
-      {
-        id: '15',
-        date: new Date(now - 56 * 24 * 60 * 60 * 1000).toISOString(),
-        odometer: 9400,
-        liters: 28,
-        price: 2800,
-        mileage: 15.0,
-        isFlagged: false,
-      },
-    ];
+
+    const randomInRange = (min, max) => Math.random() * (max - min) + min;
+
+    let currentOdometer = Math.floor(randomInRange(5000, 10000));
+
+    const basePricePerLiter = randomInRange(3.00, 4.50);
+
+    const numLogs = Math.floor(randomInRange(15, 20));
+    const demoLogs = [];
+
+    const distances = [];
+
+    for (let i = 0; i < numLogs; i++) {
+      const daysBetween = Math.floor(randomInRange(2, 7));
+      const logDate = new Date(now - i * daysBetween * 24 * 60 * 60 * 1000);
+
+      const isFlagged = i < 3;
+      const isFlagged = i < 3;
+
+      // Random fuel amount: 7-14 liters
+      const fuelAmount = parseFloat(randomInRange(7, 14).toFixed(1));
+
+      // Calculate distance and mileage
+      let mileage;
+      let distance;
+
+      if (isFlagged) {
+        mileage = parseFloat(randomInRange(4, 7).toFixed(1));
+        distance = Math.round(mileage * fuelAmount);
+      } else {
+        mileage = parseFloat(randomInRange(13, 17).toFixed(1));
+        distance = Math.round(mileage * fuelAmount);
+      }
+
+      const price = parseFloat((fuelAmount * basePricePerLiter * randomInRange(0.95, 1.05)).toFixed(2));
+
+      distances.push(distance);
+
+      demoLogs.push({
+        id: `log-${i}`,
+        date: logDate.toISOString(),
+        odometer: 0,
+        liters: fuelAmount,
+        price: price,
+        mileage: mileage,
+        isFlagged: isFlagged,
+        fuelType: 'gasoline',
+        currency: 'USD',
+        originalCurrency: 'USD',
+        originalPrice: price,
+        pumpName: i % 3 === 0 ? 'Shell Station' : i % 3 ===1 ? 'Chevron' : 'BP',
+      });
+    }
+
+    demoLogs.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    let baseOdometer = Math.floor(randomInRange(5000, 10000));
+
+    for (let i = demoLogs.length - 1; i >= 0; i--) {
+      const log = demoLogs[i];
+
+      if (i === demoLogs.length - 1) {
+        log.odometer = baseOdometer;
+      } else {
+        log.odometer = demoLogs[i + 1].odometer + distances[i + 1];
+      }
+    }
+
+    const odometerOffset = Math.floor(randomInRange(500, 1500));
+    demoLogs.forEach(log => {
+      log.odometer += odometerOffset;
+    });
 
     const stats = calculateStats(demoLogs);
 
+    const vehicleOptions = [
+      {
+        name: 'Sample Vehicle 1',
+        make: 'Sample',
+        model: 'Vehicle',
+        variant: 'Sample',
+        year: new Date().getFullYear(),
+        vehicleId: 41190,
+        epaCity: 30,
+        epaHighway: 38,
+        epaCombined: 33,
+      },
+      {
+        name: 'Sample Vehicle 2',
+        make: 'Sample',
+        model: 'Vehicle',
+        year: new Date().getFullYear(),
+        vehicleId: 41542,
+        epaCity: 33,
+        epaHighway: 42,
+        epaCombined: 36,
+      },
+      {
+        name: 'Sample Vehicle 3',
+        make: 'Sample',
+        model: 'Vehicle',
+        year: new Date().getFullYear(),
+        vehicleId: 42123,
+        epaCity: 33,
+        epaHighway: 43,
+        epaCombined: 37,
+      },
+    ];
+
+    const selectedVehicle = vehicleOptions[Math.floor(randomInRange(0, vehicleOptions.length))];
+
+    const demoVehicle = {
+      id: 'vehicle-1',
+      ...selectedVehicle,
+      expectedMileage: selectedVehicle.epaCombined || 15,
+      tankCapacity: 50,
+      country: 'US',
+      currency: 'USD',
+      distanceUnit: 'km',
+      fuelVolumeUnit: 'L',
+      efficiencyUnit: 'km/L',
+      fuelType: 'gasoline',
+      theftThreshold: 0.75,
+      assignedDriverId: 'driver-1',
+      status: 'Active',
+      createdAt: new Date().toISOString(),
+    };
+
+    const driverNames = ['Sample User 1', 'Sample User 2', 'Sample User 3', 'Sample User 4'];
+    const selectedDriver = driverNames[Math.floor(randomInRange(0, driverNames.length))];
+
     setData({
       logs: demoLogs,
-      vehicleProfile: {
-        name: 'Sample Vehicle',
-        expectedMileage: 15,
-        tankCapacity: 50,
-      },
+      drivers: [
+        {
+          id: 'driver-1',
+          name: selectedDriver,
+          email: `${selectedDriver.toLowerCase().replace(' ', '.')}@example.com`,
+          phone: '+1 ' + Math.floor(randomInRange(200, 999)) + ' ' + Math.floor(randomInRange(100, 999)) + ' ' + Math.floor(randomInRange(1000, 9999)),
+          assignedVehicleId: 'vehicle-1',
+          createdAt: new Date().toISOString(),
+        },
+      ],
+      vehicles: [demoVehicle],
+      currentVehicleId: 'vehicle-1',
+      vehicleProfile: { ...demoVehicle, id: undefined, createdAt: undefined },
       stats,
+      lastLocation: null,
+    });
+  }, [calculateStats]);
+
+  const clearAllData = useCallback(async () => {
+    setSkipPersist(true);
+    await storage.clear(STORAGE_KEY);
+    setData(defaultState);
+  }, []);
+
+  const value = {
+    data,
+    loading,
+    storageType,
+    addLog,
+    deleteLog,
+    updateVehicleProfile,
+    updateVehicleProfileWithCurrencyConversion,
+    addVehicle,
+    updateVehicle,
+    deleteVehicle,
+    selectVehicle,
+    addDriver,
+    updateDriver,
+    deleteDriver,
+    injectDemoData,
+    clearAllData,
+  };
+
+  return <FuelContext.Provider value={value}>{children}</FuelContext.Provider>;
+};
+
+    // Random driver names
+    const driverNames = ['Sample User 1', 'Sample User 2', 'Sample User 3', 'Sample User 4'];
+    const selectedDriver = driverNames[Math.floor(randomInRange(0, driverNames.length))];
+
+    setData({
+      logs: demoLogs,
+      drivers: [
+        {
+          id: 'driver-1',
+          name: selectedDriver,
+          email: `${selectedDriver.toLowerCase().replace(' ', '.')}@example.com`,
+          phone: '+1 ' + Math.floor(randomInRange(200, 999)) + ' ' + Math.floor(randomInRange(100, 999)) + ' ' + Math.floor(randomInRange(1000, 9999)),
+          assignedVehicleId: 'vehicle-1',
+      createdAt: new Date().toISOString(),
+        },
+      ],
+      vehicles: [demoVehicle],
+      currentVehicleId: 'vehicle-1',
+      vehicleProfile: { ...demoVehicle, id: undefined, createdAt: undefined },
+      stats,
+      lastLocation: null,
     });
   }, [calculateStats]);
 
@@ -307,6 +585,14 @@ export const FuelProvider = ({ children }) => {
     addLog,
     deleteLog,
     updateVehicleProfile,
+    updateVehicleProfileWithCurrencyConversion,
+    addVehicle,
+    updateVehicle,
+    deleteVehicle,
+    selectVehicle,
+    addDriver,
+    updateDriver,
+    deleteDriver,
     injectDemoData,
     clearAllData,
   };
