@@ -32,7 +32,8 @@ theft or a leak.
 There's also a basic eco-score per driver, calculated from fuel burn rate vs.
 distance traveled, so dispatchers can see patterns across their fleet over time.
 
-**Note:** The dashboard currently runs on simulated data streams written to mimic real
+**Important:** We didn't have access to physical truck hardware, so the
+dashboard runs on simulated data streams we wrote to mimic real
 IoT sensor payloads. The detection logic is real , the data feeding it isn't yet.
 
 ---
@@ -88,4 +89,3 @@ git clone https://github.com/Aneeeqa/FuelGuard.git
 npm install
 npm run dev
 ```
-
