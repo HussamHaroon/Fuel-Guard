@@ -89,3 +89,9 @@ git clone https://github.com/Aneeeqa/FuelGuard.git
 npm install
 npm run dev
 ```
+
+## Contributors
+
+<a href="https://github.com/Aneeeqa/Fuel-Guard/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Aneeeqa/Fuel-Guard" />
+</a>
